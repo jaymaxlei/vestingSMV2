@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.27;
+pragma solidity 0.8.28;
 
 import {VestingWallet}        from "@openzeppelin/contracts/finance/VestingWallet.sol";
 import {VestingWalletCliff}   from "@openzeppelin/contracts/finance/VestingWalletCliff.sol";
@@ -34,10 +34,26 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
     error OnlyBeneficiary();
     error ZeroAddressToken();
     error ZeroAddressStaking();
+    error RenounceOwnershipDisabled();
+
+    event Staked(address indexed node, uint256 amount);
+    event Unstaked(address indexed node, uint256 amount);
+    event UnstakeWithdrawn(uint256 amount);
+    event RewardWithdrawn(uint256 amount);
+    event Claimed(uint256 releasedAmount, uint256 unstakedReturned);
 
     modifier onlyBeneficiary() {
         if (msg.sender != owner()) revert OnlyBeneficiary();
         _;
+    }
+
+    /// @dev Disabled — see AUDIT.md M-3. Calling Ownable.renounceOwnership()
+    /// on a vesting wallet would zero `owner()` and cause every future
+    /// release() to burn IDOS to address(0). If a deliberate forfeit is
+    /// ever required, replace this with an explicit `forfeitTo(address)`
+    /// that pays to a non-zero sink.
+    function renounceOwnership() public view override onlyOwner {
+        revert RenounceOwnershipDisabled();
     }
 
     constructor(
@@ -91,30 +107,47 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
         return ts < cliff() ? 0 : super._vestingSchedule(totalAllocation, ts);
     }
 
+    /// Cap the releasable amount at the wallet's free balance of this token
+    /// (audit M-1). Without this, release() reverts with
+    /// ERC20InsufficientBalance whenever vestedAmount() — which counts
+    /// outstandingStake — exceeds the wallet's residual balance. Capping
+    /// makes release() a partial payment instead: the beneficiary gets
+    /// whatever is free now, and the remainder waits until the staked
+    /// portion has been unstaked + withdrawn back into the wallet. OZ's
+    /// `release(address)` updates `_erc20Released[token] += releasable`
+    /// after this call, so the cap correctly bumps the released ledger by
+    /// the actual transfer amount.
+    function releasable(address token) public view override returns (uint256) {
+        uint256 amount   = vestedAmount(token, uint64(block.timestamp)) - released(token);
+        uint256 balance  = IERC20(token).balanceOf(address(this));
+        return amount > balance ? balance : amount;
+    }
+
     // ─── staking actions ──────────────────────────────────────────────
 
     function stakeAt(address node, uint256 amount) external onlyBeneficiary {
         outstandingStake += amount;
         IDOS.forceApprove(address(STAKING), amount);
         STAKING.stake(address(this), node, amount);
+        emit Staked(node, amount);
     }
 
     function unstakeFrom(address node, uint256 amount) external onlyBeneficiary {
         STAKING.unstake(node, amount);
+        emit Unstaked(node, amount);
     }
 
     function withdrawUnstaked() external onlyBeneficiary returns (uint256 received) {
-        uint256 before = IDOS.balanceOf(address(this));
-        STAKING.withdrawUnstaked();
-        received = IDOS.balanceOf(address(this)) - before;
-        outstandingStake -= received;
+        received = _withdrawUnstakedInternal();
+        emit UnstakeWithdrawn(received);
     }
 
     /// Rewards land here and vest with the principal. For a "rewards are
     /// immediately free" UX, replace the body with: withdraw, then
     /// IDOS.safeTransfer(owner(), received).
     function withdrawReward() external onlyBeneficiary returns (uint256 amount) {
-        return STAKING.withdrawReward();
+        amount = STAKING.withdrawReward();
+        emit RewardWithdrawn(amount);
     }
 
     /// Convenience: tries to pull any unstake-ripe IDOS back into the wallet,
@@ -123,9 +156,10 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
     /// withdraw step silently no-ops if nothing is ready (avoiding a revert on
     /// the staking contract's NoWithdrawableStake error).
     function claimVested() external returns (uint256 releasedAmount, uint256 unstakedReturned) {
-        try STAKING.withdrawUnstaked() returns (uint256 r) {
+        // Best-effort withdraw of any matured queue; balance-delta
+        // accounting matches the gated path in withdrawUnstaked (audit L-1).
+        try this._withdrawUnstakedExternal() returns (uint256 r) {
             unstakedReturned = r;
-            outstandingStake -= r;
         } catch {
             // Nothing in the unstake queue is ripe yet — that's fine, fall
             // through to release() so any time-vested portion still pays out.
@@ -133,5 +167,27 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
         uint256 before = IDOS.balanceOf(owner());
         release(address(IDOS));
         releasedAmount = IDOS.balanceOf(owner()) - before;
+        emit Claimed(releasedAmount, unstakedReturned);
+    }
+
+    /// Internal: pull matured unstakes back into the wallet and update
+    /// outstandingStake using the balance-delta. Used by both the
+    /// beneficiary-only public path and the permissionless claimVested path
+    /// so accounting cannot diverge between them.
+    function _withdrawUnstakedInternal() internal returns (uint256 received) {
+        uint256 before = IDOS.balanceOf(address(this));
+        STAKING.withdrawUnstaked();
+        received = IDOS.balanceOf(address(this)) - before;
+        outstandingStake -= received;
+    }
+
+    /// External wrapper used only by claimVested via `this.` so the staking
+    /// contract's revert (NoWithdrawableStake) can be caught without
+    /// reverting the outer transaction. Not callable directly — guarded by
+    /// the address(this) check so external callers cannot mutate
+    /// outstandingStake outside of the claimVested flow.
+    function _withdrawUnstakedExternal() external returns (uint256 received) {
+        if (msg.sender != address(this)) revert OnlyBeneficiary();
+        return _withdrawUnstakedInternal();
     }
 }
