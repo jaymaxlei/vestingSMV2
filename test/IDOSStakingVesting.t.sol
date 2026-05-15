@@ -24,9 +24,10 @@ contract IDOSStakingVestingForkTest is Test {
     IDOSStakingVesting wallet;
 
     function setUp() public {
-        // Schedule: starts now, 6 months linear, no cliff.
+        // Schedule: starts now, 36 months linear (1096 days, incl. one leap
+        // day — matches modality VESTED_12_36's duration), no cliff.
         uint64 start    = uint64(block.timestamp);
-        uint64 duration = 6 * 30 days;
+        uint64 duration = 1096 days;
         uint64 cliff    = 0;
         wallet = new IDOSStakingVesting(beneficiary, start, duration, cliff, IDOS, STAKING);
 
@@ -46,8 +47,8 @@ contract IDOSStakingVestingForkTest is Test {
         assertEq(IDOS.balanceOf(address(wallet)),  500_000 ether);
         assertEq(wallet.outstandingStake(),        500_000 ether);
 
-        // 2. Jump to ~50% of vesting period.
-        vm.warp(block.timestamp + 3 * 30 days);
+        // 2. Jump to ~50% of vesting period (548 days into a 1096-day vest).
+        vm.warp(block.timestamp + 548 days);
 
         // 3. release() should account for the staked half — i.e. pay ~500k
         //    (50% of 1M), not ~250k (50% of the wallet's own 500k balance).

@@ -39,6 +39,16 @@ out at staking) minus any slashed amount queried live from
 | `withdrawUnstaked()` (sends to `msg.sender`) | Tokens come back into the wallet, not the EOA            |
 | `withdrawReward()` (sends to `msg.sender`)   | Rewards land in the wallet and vest with principal       |
 
+## Schedule
+
+The canonical deployment uses a **36-month linear vest with no cliff**:
+
+| Parameter | Value |
+| --------- | ----- |
+| `start`    | `block.timestamp` at deploy (override with `START` env var) |
+| `duration` | `1096 days` (36 months including one leap day — matches `VESTED_12_36` exactly) |
+| `cliff`    | `0` (none) |
+
 ## Tests
 
 ```
@@ -49,12 +59,23 @@ ARB_RPC=https://arb1.arbitrum.io/rpc \
 
 The fork test:
 
-1. Deploys a fresh wallet with a 6-month / no-cliff schedule.
+1. Deploys a fresh wallet with a **36-month / no-cliff** schedule.
 2. Pranks `STAKING_OWNER` to `allowNode(node)`.
-3. Stakes half the principal, fast-forwards to mid-vesting.
+3. Stakes half the principal, fast-forwards to mid-vesting (day 548 of 1096).
 4. Asserts that `release()` pays ~50% of the *full* allocation (1M),
    not ~50% of the wallet's residual balance (500k).
 5. Verifies the unstake → 14-day delay → withdraw round-trip.
+
+## Deploy
+
+```
+BENEFICIARY=0x… \
+PRIVATE_KEY=0x… \
+forge script script/Deploy.s.sol --rpc-url $ARB_RPC --broadcast --verify
+```
+
+Optional: set `START=<unix>` to backdate or schedule the start. Defaults to
+`block.timestamp` at deploy.
 
 ## Migration
 
