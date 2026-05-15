@@ -244,11 +244,13 @@ h2 {
     margin-top: 1.6em;
     border-bottom: 1px solid var(--rule);
     padding-bottom: 4pt;
+    page-break-after: avoid;    /* don't strand a heading at the bottom */
 }
 h3 {
     font-size: 11pt;
     color: var(--ink);
     margin-top: 1.4em;
+    page-break-after: avoid;
 }
 h4 {
     font-size: 10pt;
@@ -256,7 +258,10 @@ h4 {
     margin-top: 1.1em;
     text-transform: uppercase;
     letter-spacing: 0.08em;
+    page-break-after: avoid;
 }
+
+p, li { orphans: 3; widows: 3; }
 
 p { margin: 0 0 0.6em 0; text-align: justify; }
 hr { border: 0; border-top: 1px solid var(--rule); margin: 1.4em 0; }
@@ -284,8 +289,12 @@ table {
     border-collapse: collapse;
     font-size: 9.5pt;
     margin: 0.8em 0 1.2em 0;
-    page-break-inside: avoid;
+    /* page-break-inside: avoid intentionally OMITTED — short tables fit
+       naturally; long tables (findings master list, methodology grid) must
+       break across pages or they push huge whitespace gaps. */
 }
+thead { display: table-header-group; }   /* repeat <thead> on each page */
+tr { page-break-inside: avoid; }         /* don't split inside a row */
 th {
     background: var(--bg-soft);
     color: var(--ink);
@@ -331,7 +340,8 @@ pre {
     white-space: pre-wrap;
     word-wrap: break-word;
     margin: 0.8em 0;
-    page-break-inside: avoid;
+    /* page-break-inside: avoid OMITTED — long code blocks (Slither output,
+       fork-test log) must be allowed to break across pages. */
 }
 pre code {
     background: transparent;
