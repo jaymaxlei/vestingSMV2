@@ -73,4 +73,14 @@ End-state expected: wallet IDOS = 0, beneficiary IDOS = 200 IDOS (back to its
 pre-test holding), `released(IDOS) = 100e18`, `outstandingStake = 0`. Nothing
 stuck.
 
-A scheduled task has also been registered locally to fire this automatically.
+To automate the T+14d step, ask Claude to run the `scheduled-tasks` skill
+with this prompt (it needs an approval dialog that auto-mode can't show):
+
+> Schedule a one-time task `idos-vesting-live-finish` to fire at
+> `2026-05-30T18:00:00Z`. Prompt the task to `cd` into this repo and run
+> `PRIVATE_KEY=… ./script/LiveFinish.sh`, then append the closing tx hashes
+> to LIVE_TEST.md and commit/push to origin/main.
+
+Alternatively, set a calendar reminder for **2026-05-30** and run the script
+manually — it is idempotent in the sense that it will either succeed on a
+ripe queue or revert cleanly with `NoWithdrawableStake` if called too early.
