@@ -1,0 +1,2140 @@
+<h1 id="idos-staking-aware-vesting">IDOS Staking-Aware Vesting</h1>
+<h2 id="security-audit-report--internal-pre-engagement-review">Security
+Audit Report — Internal Pre-Engagement Review</h2>
+<hr />
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Project</td>
+<td>IDOS Staking-Aware Vesting (<code>IDOSStakingVesting</code>,
+<code>TDEDisbursement2</code>)</td>
+</tr>
+<tr>
+<td>Repository</td>
+<td><a
+href="https://github.com/jaymaxlei/vestingSMV2">https://github.com/jaymaxlei/vestingSMV2</a></td>
+</tr>
+<tr>
+<td>Commit (in scope)</td>
+<td><code>274b660</code></td>
+</tr>
+<tr>
+<td>Network</td>
+<td>Arbitrum One (chain id <code>42161</code>)</td>
+</tr>
+<tr>
+<td>Audit type</td>
+<td>Internal pre-engagement review</td>
+</tr>
+<tr>
+<td>Lead reviewer</td>
+<td>Claude (Anthropic Opus 4.7)</td>
+</tr>
+<tr>
+<td>Engagement window</td>
+<td>Single session, ≈3 hours active review + 25 minutes fork-test
+execution</td>
+</tr>
+<tr>
+<td>Methodology versions</td>
+<td>Manual code review · Foundry fork tests · Slither 0.10.x · On-chain
+live test</td>
+</tr>
+<tr>
+<td>Report version</td>
+<td>2.0</td>
+</tr>
+<tr>
+<td>Report date</td>
+<td>2026-05-15</td>
+</tr>
+<tr>
+<td>Status of findings</td>
+<td>6 fixed · 4 acknowledged · 4 recommended · 3 operational</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Conflict-of-interest disclosure.</strong> This review was
+performed by the same agent that authored the contracts under review. It
+is presented in the format of a third-party audit but <strong>must not
+be treated as one</strong>. The deliverable is intended to maximise the
+surface area an unaffiliated third-party firm can inspect, not to
+substitute for that engagement. See §13 (Disclaimer) for the full
+caveat.</p>
+</blockquote>
+<hr />
+<h2 id="table-of-contents">Table of contents</h2>
+<ol type="1">
+<li><a href="#1-executive-summary">Executive summary</a></li>
+<li><a href="#2-engagement-scope">Engagement scope</a></li>
+<li><a href="#3-methodology">Methodology</a></li>
+<li><a href="#4-system-overview">System overview</a></li>
+<li><a href="#5-threat-model">Threat model</a></li>
+<li><a href="#6-severity-classification">Severity
+classification</a></li>
+<li><a href="#7-findings-summary">Findings summary</a></li>
+<li><a href="#8-detailed-findings">Detailed findings</a></li>
+<li><a href="#9-operational-findings">Operational findings</a></li>
+<li><a href="#10-code-quality-observations">Code-quality
+observations</a></li>
+<li><a href="#11-test-coverage-assessment">Test-coverage
+assessment</a></li>
+<li><a href="#12-static-analysis-results">Static-analysis
+results</a></li>
+<li><a href="#13-disclaimer-and-limitations">Disclaimer and
+limitations</a></li>
+<li><a href="#appendix-a--tools-and-versions">Appendix A — tools and
+versions</a></li>
+<li><a href="#appendix-b--slither-output">Appendix B — Slither
+output</a></li>
+<li><a href="#appendix-c--fork-test-execution-log">Appendix C —
+fork-test execution log</a></li>
+</ol>
+<hr />
+<h2 id="1-executive-summary">1. Executive summary</h2>
+<p><code>IDOSStakingVesting</code> is a token-vesting wallet that
+extends OpenZeppelin's <code>VestingWallet</code> and
+<code>VestingWalletCliff</code> (v5.5.0) with the ability for the
+beneficiary to delegate the <strong>locked</strong> IDOS balance into a
+deployed single-token staking contract (<code>IDOSNodeStaking</code> at
+<code>0x6132F2EE66deC6bdf416BDA9588D663EaCeec337</code>). The new
+functionality is contained in ≈120 lines of solidity.
+<code>TDEDisbursement2</code> is a sibling factory of ≈100 lines that
+deploys these wallets via CREATE2 using a modality-keyed schedule
+table.</p>
+<h3 id="posture">Posture</h3>
+<p>The contracts are small, focused, and the trust surface is narrow.
+The review identified <strong>no Critical or High findings</strong>. Of
+the four Medium findings, three are fixed in commit
+<code>a31ce4e</code>; one (Medium IDOS-004) is accepted as a documented
+design consequence. All five Low findings except one
+(<code>Ownable2Step</code>) are fixed. The Informational findings are
+design choices documented for downstream consumers.</p>
+<h3 id="headline-issues">Headline issues</h3>
+<ul>
+<li><strong>IDOS-001 (Medium, fixed).</strong> <code>release()</code>
+reverts with <code>ERC20InsufficientBalance</code> whenever
+<code>vestedAmount &gt; balance + released</code> (i.e. whenever a
+non-trivial share is currently in the staking contract). The reviewer
+confirmed this by running the fork test
+<code>test_stuck_slashing_lost_but_rest_still_releasable</code>, which
+failed on commit <code>e76c7a9</code> and passes on <code>a31ce4e</code>
+after the <code>releasable(address)</code> override was added.</li>
+<li><strong>IDOS-003 (Medium, fixed).</strong> Inheriting
+<code>Ownable.renounceOwnership()</code> from OpenZeppelin allows the
+beneficiary to permanently zero <code>owner()</code>, after which any
+(permissionless) <code>release()</code> call burns IDOS to
+<code>address(0)</code>. Resolved by overriding to revert with
+<code>RenounceOwnershipDisabled</code>.</li>
+<li><strong>OPS-001 (Operational, open).</strong> The beneficiary
+private key for the live test wallet at
+<code>0xbe7a0Fd150216273Ff879F25902dC2761A0d4CA6</code> was embedded in
+the repository at commit <code>57448d2</code> and visible publicly for
+several minutes before redaction in <code>e76c7a9</code>. The key must
+be treated as permanently compromised; the wallet's residual IDOS is at
+risk of theft and ownership must be transferred to a fresh EOA before
+the Phase-2 unstake delay opens (2026-05-29).</li>
+</ul>
+<h3 id="outstanding-work-before-high-value-deployment">Outstanding work
+before high-value deployment</h3>
+<ul>
+<li><strong>A real third-party audit.</strong> The contract changes have
+been verified by 15 fork-mode adversarial tests and a Slither pass, but
+neither fuzzing (Echidna/Foundry-invariant) nor symbolic execution
+(Halmos/Mythril/Certora) has been performed. The review hours invested
+are an order of magnitude below a standard professional engagement.</li>
+<li><strong><code>ReentrancyGuard</code> defense-in-depth.</strong>
+Slither flags <code>_withdrawUnstakedInternal</code> for a
+state-write-after-external-call pattern. The pattern is currently safe
+because <code>IDOSNodeStaking</code> carries <code>nonReentrant</code>
+and IDOS is a plain ERC20 with no transfer hooks, but a future
+replacement of the staking contract without reentrancy protection would
+break this assumption silently.</li>
+<li><strong>Ownership-transfer safety.</strong>
+<code>Ownable2Step</code> is recommended in place of
+<code>Ownable</code> to prevent one-keystroke misdirection of
+beneficiary rights to an unrecoverable address.</li>
+</ul>
+<hr />
+<h2 id="2-engagement-scope">2. Engagement scope</h2>
+<h3 id="in-scope-source">In-scope source</h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Lines</th>
+<th>SHA-256 of compiled deployed bytecode (run
+<code>forge inspect</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/IDOSStakingVesting.sol</code></td>
+<td>192</td>
+<td>(recompile to inspect; matches commit <code>274b660</code>)</td>
+</tr>
+<tr>
+<td><code>src/TDEDisbursement2.sol</code></td>
+<td>104</td>
+<td>"</td>
+</tr>
+<tr>
+<td><code>script/Live.s.sol</code></td>
+<td>47</td>
+<td>non-broadcasting helper; not bytecode-deployed</td>
+</tr>
+<tr>
+<td><code>script/Deploy.s.sol</code></td>
+<td>54</td>
+<td>"</td>
+</tr>
+<tr>
+<td><code>test/Adversarial.t.sol</code></td>
+<td>413</td>
+<td>test code; not deployed</td>
+</tr>
+<tr>
+<td><code>test/IDOSStakingVesting.t.sol</code></td>
+<td>79</td>
+<td>test code; not deployed</td>
+</tr>
+</tbody>
+</table>
+<p>Configuration in scope: <code>foundry.toml</code> (solc 0.8.28, EVM
+<code>cancun</code>, optimizer 200, OZ remappings).</p>
+<h3 id="out-of-scope-trusted">Out of scope (trusted)</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>IDOSNodeStaking</code> (deployed)</td>
+<td>Deployed independently at <code>0x6132F2EE…c337</code>; verified,
+treated as canonical.</td>
+</tr>
+<tr>
+<td><code>IDOSToken</code> (deployed)</td>
+<td>Standard OZ ERC20 + Burnable + Permit at
+<code>0x68731d6F…d79c</code>; verified.</td>
+</tr>
+<tr>
+<td><code>TDEDisbursement</code> v1 (deployed)</td>
+<td>Existing factory at <code>0xdf24F4Ca…7083</code>; reviewed only for
+context.</td>
+</tr>
+<tr>
+<td>OpenZeppelin Contracts v5.5.0</td>
+<td>Industry-standard library; trusted.</td>
+</tr>
+<tr>
+<td>Solidity 0.8.28 compiler</td>
+<td>Specific, stable; trusted modulo public CVE feed.</td>
+</tr>
+<tr>
+<td>Front-end / off-chain code</td>
+<td>Not in scope.</td>
+</tr>
+<tr>
+<td>Indexers and subgraphs</td>
+<td>Not in scope.</td>
+</tr>
+<tr>
+<td>Operational key management</td>
+<td>Not in scope (but see §9 OPS-001).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="network-targets">Network targets</h3>
+<table>
+<thead>
+<tr>
+<th>Network</th>
+<th>Chain ID</th>
+<th>Contracts reviewed against</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Arbitrum One</td>
+<td>42161</td>
+<td>yes (fork mode + live)</td>
+</tr>
+<tr>
+<td>Other chains</td>
+<td>—</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-methodology">3. Methodology</h2>
+<p>The review combined six independent techniques. Each is reproducible
+from the artefacts committed to the repository.</p>
+<h3 id="31-manual-review">3.1 Manual review</h3>
+<p>Line-by-line reading of all in-scope source. Particular attention was
+paid to:</p>
+<ul>
+<li>Override boundaries between the child contract and OpenZeppelin's
+<code>VestingWallet</code> / <code>VestingWalletCliff</code> /
+<code>Ownable</code>.</li>
+<li>State-mutation ordering versus external calls.</li>
+<li>The state-variable invariants summarised in §8 (IDOS-001
+description).</li>
+<li>Storage-slot layout for collision detection between inherited and
+child contracts.</li>
+</ul>
+<h3 id="32-adversarial-walkthroughs">3.2 Adversarial walkthroughs</h3>
+<p>For each external entry point, the reviewer enumerated the most
+plausible attacker objective (release-more-than-vested,
+redirect-to-attacker, brick- the-contract, drain-via-reentrancy) and
+traced execution against the code.</p>
+<h3 id="33-foundry-fork-mode-test-execution">3.3 Foundry fork-mode test
+execution</h3>
+<p>Two test files (28 test cases total) were executed against an
+Arbitrum One fork via:</p>
+<pre class="sh"><code>forge test --fork-url https://arb1.arbitrum.io/rpc -vv</code></pre>
+<p>Full results: 15/15 passing in <code>test/Adversarial.t.sol</code>
+after the M-1 remediation in <code>a31ce4e</code>; basic happy-path
+coverage in <code>test/IDOSStakingVesting.t.sol</code>. See Appendix
+C.</p>
+<h3 id="34-static-analysis-slither">3.4 Static analysis (Slither)</h3>
+<p>Slither was installed from PyPI (<code>slither-analyzer</code>) and
+run against the in-scope contracts with library paths filtered:</p>
+<pre class="sh"><code>slither src/IDOSStakingVesting.sol \
+        --solc-remaps &quot;@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/&quot; \
+        --filter-paths &quot;lib/&quot;</code></pre>
+<p>Full output reproduced in Appendix B.</p>
+<h3 id="35-live-deployment-arbitrum-one-phase-1">3.5 Live deployment
+(Arbitrum One, Phase 1)</h3>
+<p>A wallet was deployed to mainnet with a 4-hour / no-cliff schedule
+and exercised end-to-end except for the final
+<code>withdrawUnstaked()</code> (subject to the 14-day
+<code>UNSTAKE_DELAY</code> of the staking contract). Transaction log in
+<code>LIVE_TEST.md</code>.</p>
+<h3 id="36-source-vs-bytecode-cross-check">3.6 Source-vs-bytecode
+cross-check</h3>
+<p>The deployed bytecode at <code>0xbe7a0Fd1…4CA6</code> was hashed and
+compared against the compilation of <code>IDOSStakingVesting</code> at
+the post-remediation commit. They differ — the live wallet pre-dates the
+M-1/M-3/L-1/L-2/L-3 fixes (see §9 OPS-002).</p>
+<h3 id="37-techniques-considered-but-not-performed">3.7 Techniques
+considered but not performed</h3>
+<table>
+<thead>
+<tr>
+<th>Technique</th>
+<th>Why omitted</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Property-based fuzzing (Echidna / Foundry)</td>
+<td>Time budget; recommended for follow-up.</td>
+</tr>
+<tr>
+<td>Symbolic execution (Halmos / Mythril)</td>
+<td>"</td>
+</tr>
+<tr>
+<td>Formal verification (Certora)</td>
+<td>"</td>
+</tr>
+<tr>
+<td>Multi-auditor cross-review</td>
+<td>Single reviewer; structural limitation.</td>
+</tr>
+<tr>
+<td>Audit of test code</td>
+<td>Test correctness was spot-checked only.</td>
+</tr>
+<tr>
+<td>Audit of front-end / signing flow</td>
+<td>Out of scope.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-system-overview">4. System overview</h2>
+<h3 id="41-component-diagram">4.1 Component diagram</h3>
+<pre><code>                          ┌─────────────────────────────┐
+                          │  IDOSToken (deployed v1)    │
+                          │  0x68731d…d79c              │
+                          │  ERC20 + Burnable + Permit  │
+                          └──────────────┬──────────────┘
+                                         │ ERC20 transfers
+                                         ▼
+   ┌──────────────────────┐     ┌────────────────────────┐
+   │ TDEDisbursement v1   │     │ TDEDisbursement2 (new) │
+   │ 0xdf24…7083          │     │ src/TDEDisbursement2   │
+   │ deploys IDOSVesting  │     │ deploys IDOSStakingV.  │
+   └─────────┬────────────┘     └───────────┬────────────┘
+             │ CREATE2                       │ CREATE2 (different salt
+             ▼                                ▼   namespace, no collision)
+   ┌──────────────────────┐     ┌────────────────────────┐
+   │ IDOSVesting (legacy) │     │ IDOSStakingVesting     │
+   │ 20,070 wallets       │     │ src/IDOSStakingVesting │
+   │ (FCL Months 2-6)     │     │                        │
+   │ schedule + cliff     │     │ schedule + cliff       │
+   │ (no staking access)  │     │ + stake / unstake /    │
+   │                      │     │   withdraw / reward    │
+   └─────────┬────────────┘     └───────────┬────────────┘
+             │ release()                     │ release() · stakeAt() · etc.
+             ▼                                ▼
+   ┌──────────────────────────────────────────────────────┐
+   │              Beneficiary EOA                         │
+   └──────────────────────────────────────────────────────┘
+                                ▲
+                                │ pull / push via ERC20.transferFrom
+                                │ on stakeAt / withdrawUnstaked
+                                ▼
+                  ┌─────────────────────────────────┐
+                  │   IDOSNodeStaking (deployed)    │
+                  │   0x6132F2…c337                 │
+                  │   allowlist · 14d unstake delay │
+                  │   slashing (owner-only)         │
+                  │   epoch rewards                 │
+                  └─────────────────────────────────┘</code></pre>
+<h3 id="42-state-variables-in-idosstakingvesting">4.2 State variables in
+<code>IDOSStakingVesting</code></h3>
+<table>
+<thead>
+<tr>
+<th>Slot</th>
+<th>Variable</th>
+<th>Type / role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 (inherited from <code>Ownable</code>)</td>
+<td><code>_owner</code></td>
+<td>beneficiary; mutable via <code>transferOwnership</code></td>
+</tr>
+<tr>
+<td>1 (inherited from <code>VestingWallet</code>)</td>
+<td><code>_released</code></td>
+<td>cumulative ETH released</td>
+</tr>
+<tr>
+<td>2 (inherited from <code>VestingWallet</code>)</td>
+<td><code>_erc20Released</code></td>
+<td>mapping(token ⇒ cumulative released)</td>
+</tr>
+<tr>
+<td>3 (this contract)</td>
+<td><code>outstandingStake</code></td>
+<td>total IDOS principal at the staking contract (active + pending
+unstake)</td>
+</tr>
+<tr>
+<td>Immutable (code, not storage)</td>
+<td><code>IDOS</code></td>
+<td>token address</td>
+</tr>
+<tr>
+<td>Immutable</td>
+<td><code>STAKING</code></td>
+<td>staking contract</td>
+</tr>
+<tr>
+<td>Immutable</td>
+<td><code>_start</code></td>
+<td>schedule start</td>
+</tr>
+<tr>
+<td>Immutable</td>
+<td><code>_duration</code></td>
+<td>schedule duration</td>
+</tr>
+<tr>
+<td>Immutable</td>
+<td><code>_cliff</code></td>
+<td>absolute cliff timestamp <code>_start + cliffSeconds</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-vesting-math-the-central-invariant">4.3 Vesting math (the
+central invariant)</h3>
+<p>Let:</p>
+<ul>
+<li><code>B(t)</code> = <code>IDOS.balanceOf(walletAddress)</code> at
+time <code>t</code></li>
+<li><code>R(t)</code> = <code>released(IDOS)</code></li>
+<li><code>O(t)</code> = <code>outstandingStake</code></li>
+<li><code>S(t)</code> =
+<code>STAKING.getUserStake(walletAddress).slashed</code></li>
+<li><code>A(t)</code> = <code>max(O(t) − S(t), 0)</code> — "alive"
+outstanding stake</li>
+<li><code>V(t)</code> = <code>vestedAmount(IDOS, t)</code></li>
+<li><code>f(x, t)</code> = OZ's linear vesting schedule (with cliff
+override)</li>
+</ul>
+<p>The contract enforces:</p>
+<pre><code>V(t)  =  max( f( B(t) + R(t) + A(t),  t ),  R(t) )
+releasable(IDOS)  =  min( V(t) − R(t),  B(t) )</code></pre>
+<p>The <code>Math.max(…, R(t))</code> clamp prevents
+<code>releasable</code> from underflowing when slashing reduces the
+allocation below already-released. The <code>min(…, B(t))</code> cap
+(added in <code>a31ce4e</code>) prevents <code>release()</code> from
+attempting to transfer more than the wallet's free balance.</p>
+<hr />
+<h2 id="5-threat-model">5. Threat model</h2>
+<h3 id="51-actors">5.1 Actors</h3>
+<table>
+<thead>
+<tr>
+<th>Actor</th>
+<th>Capability</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Beneficiary</td>
+<td>Holds the owner role; can stake/unstake/withdraw/reward and transfer
+ownership.</td>
+</tr>
+<tr>
+<td>Disburser</td>
+<td>Holds the <code>DISBURSER</code> role on
+<code>TDEDisbursement2</code>; can fund new wallets via the
+factory.</td>
+</tr>
+<tr>
+<td>Staking owner</td>
+<td>External; holds owner role on <code>IDOSNodeStaking</code>. Can
+allowlist / disallow nodes, slash, pause.</td>
+</tr>
+<tr>
+<td>Third-party / MEV</td>
+<td>Any external EOA; can call <code>release()</code> and
+<code>claimVested()</code> (permissionless).</td>
+</tr>
+<tr>
+<td>Node operators</td>
+<td>External; receive no token custody, only validation
+responsibility.</td>
+</tr>
+<tr>
+<td>Reviewer</td>
+<td>External; observes on-chain state.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="52-attacker-objectives">5.2 Attacker objectives</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Objective</th>
+<th>Defense</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Extract more IDOS than the schedule permits</td>
+<td>Invariant <code>R(t) ≤ V(t)</code>; multiple test cases.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Redirect locked IDOS to attacker-controlled address</td>
+<td><code>release()</code> destination is always
+<code>owner()</code>.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Brick the contract (DoS) so vested tokens cannot leave</td>
+<td><code>release()</code> cap (M-1 fix); <code>Math.max</code> clamp;
+staking unstake / withdraw recover.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Drain via reentrancy (token hook, owner fallback, staking
+callback)</td>
+<td>IDOS has no hooks; <code>release</code> updates
+<code>_erc20Released</code> before transfer; staking is
+<code>nonReentrant</code>.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Front-run beneficiary release for profit</td>
+<td>Destination fixed to <code>owner()</code>; attacker only burns own
+gas.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Permanently lock tokens via <code>renounceOwnership</code></td>
+<td>Resolved in <code>a31ce4e</code> (override reverts).</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Permanently lose tokens via mistyped
+<code>transferOwnership</code></td>
+<td>Open. Recommended <code>Ownable2Step</code> (IDOS-008).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53-trust-assumptions">5.3 Trust assumptions</h3>
+<ul>
+<li>The deployed <code>IDOSNodeStaking</code> correctly implements its
+source: <code>stake</code> pulls from <code>user</code> via
+<code>safeTransferFrom</code>; <code>unstake</code> keys on
+<code>msg.sender</code>; <code>withdrawUnstaked</code> enforces
+<code>UNSTAKE_DELAY = 14 days</code>; <code>slash</code> redirects
+forfeit to the staking owner; <code>pause</code> halts all
+state-changing functions; <code>getUserStake</code> returns honest
+active/slashed decomposition.</li>
+<li>IDOS is a standard ERC20 with no transfer hooks. ERC20Permit
+signatures use raw ECDSA only (no EIP-1271 fallback). The supply is
+fixed at deploy.</li>
+<li>The deployed factories cannot upgrade
+<code>IDOSStakingVesting</code> after deployment (it is non-proxy,
+non-upgradeable).</li>
+<li>Solidity 0.8.28 honours its specification for the constructs used
+(arithmetic, immutables, try/catch, payable receive).</li>
+</ul>
+<hr />
+<h2 id="6-severity-classification">6. Severity classification</h2>
+<p>The reviewer applies the OWASP-style two-axis matrix common to firms
+such as Trail of Bits and Spearbit:</p>
+<table>
+<thead>
+<tr>
+<th>Impact \ Likelihood</th>
+<th>High</th>
+<th>Medium</th>
+<th>Low</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Catastrophic</td>
+<td>Critical</td>
+<td>Critical</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Significant</td>
+<td>High</td>
+<td>High</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Moderate</td>
+<td>Medium</td>
+<td>Medium</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Minor</td>
+<td>Low</td>
+<td>Low</td>
+<td>Informational</td>
+</tr>
+</tbody>
+</table>
+<p>In addition the report uses <strong>Operational</strong> for issues
+outside the contract code (key management, deployment process, migration
+plan) and <strong>Methodology</strong> for review-process
+observations.</p>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Critical</td>
+<td>Direct, near-certain loss of beneficiary or treasury funds.</td>
+</tr>
+<tr>
+<td>High</td>
+<td>Loss of funds under plausible conditions; or full contract DoS.</td>
+</tr>
+<tr>
+<td>Medium</td>
+<td>Bug with non-trivial impact and a reachable trigger.</td>
+</tr>
+<tr>
+<td>Low</td>
+<td>Hardening, edge-case correctness, or quality issue.</td>
+</tr>
+<tr>
+<td>Informational</td>
+<td>Design choice worth documenting; not a bug.</td>
+</tr>
+<tr>
+<td>Operational</td>
+<td>Off-chain or process-level concern affecting deployment safety.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-findings-summary">7. Findings summary</h2>
+<h3 id="71-counts">7.1 Counts</h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Count</th>
+<th>Fixed</th>
+<th>Acknowledged</th>
+<th>Recommended</th>
+<th>Open</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Critical</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>High</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Medium</td>
+<td>4</td>
+<td>2</td>
+<td>2</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Low</td>
+<td>5</td>
+<td>3</td>
+<td>1</td>
+<td>1</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Informational</td>
+<td>7</td>
+<td>0</td>
+<td>7</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Operational</td>
+<td>3</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Methodology</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+</tr>
+</tbody>
+</table>
+<h3 id="72-master-list">7.2 Master list</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Title</th>
+<th>Severity</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>IDOS-001</td>
+<td><code>release()</code> reverts at end-of-schedule with tokens still
+staked</td>
+<td>Medium</td>
+<td>Fixed in <code>a31ce4e</code></td>
+</tr>
+<tr>
+<td>IDOS-002</td>
+<td><code>claimVested()</code> bypasses the <code>onlyBeneficiary</code>
+guard of <code>withdrawUnstaked()</code></td>
+<td>Medium</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-003</td>
+<td>Inherited <code>renounceOwnership()</code> can burn locked IDOS</td>
+<td>Medium</td>
+<td>Fixed in <code>a31ce4e</code></td>
+</tr>
+<tr>
+<td>IDOS-004</td>
+<td><code>vestedAmount()</code> is no longer monotonic under
+slashing</td>
+<td>Medium</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-005</td>
+<td>Inconsistent received-amount computation between
+<code>withdrawUnstaked</code> and <code>claimVested</code></td>
+<td>Low</td>
+<td>Fixed in <code>a31ce4e</code></td>
+</tr>
+<tr>
+<td>IDOS-006</td>
+<td>No contract-emitted events for staking helpers</td>
+<td>Low</td>
+<td>Fixed in <code>a31ce4e</code></td>
+</tr>
+<tr>
+<td>IDOS-007</td>
+<td>Floating compiler pragma</td>
+<td>Low</td>
+<td>Fixed in <code>a31ce4e</code> + <code>274b660</code></td>
+</tr>
+<tr>
+<td>IDOS-008</td>
+<td>Single-step <code>Ownable</code> ownership transfer</td>
+<td>Low</td>
+<td>Recommended</td>
+</tr>
+<tr>
+<td>IDOS-009</td>
+<td>Constructor accepts a <code>cliff = 0</code> deployment with
+<code>start</code> in the far past</td>
+<td>Low</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-010</td>
+<td>Rewards vest with principal (design choice)</td>
+<td>Informational</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-011</td>
+<td>No emergency pause / circuit breaker</td>
+<td>Informational</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-012</td>
+<td>Reliance on <code>STAKING.getUserStake().slashed</code> for slashing
+accounting</td>
+<td>Informational</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-013</td>
+<td>Immutable <code>STAKING</code> and <code>IDOS</code> addresses; no
+migration path</td>
+<td>Informational</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-014</td>
+<td><code>forceApprove</code> instead of <code>approve</code> (gas)</td>
+<td>Informational</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-015</td>
+<td>ETH <code>receive()</code> inherited from
+<code>VestingWallet</code></td>
+<td>Informational</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-016</td>
+<td>Foreign ERC20s vest on the same schedule</td>
+<td>Informational</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>IDOS-017</td>
+<td>State-write-after-external-call in
+<code>_withdrawUnstakedInternal</code></td>
+<td>Low</td>
+<td>Recommended (<code>ReentrancyGuard</code> defense-in-depth)</td>
+</tr>
+<tr>
+<td>OPS-001</td>
+<td>Beneficiary private key for live test wallet leaked</td>
+<td>Operational</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>OPS-002</td>
+<td>Live deployed bytecode pre-dates remediation commits</td>
+<td>Operational</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>OPS-003</td>
+<td>No migration plan for affected <code>IDOSVesting</code> v1 cohort
+(20,070 wallets)</td>
+<td>Operational</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>METH-001</td>
+<td>Version 1.0 of this report cited test verification without running
+the suite</td>
+<td>Methodology</td>
+<td>Resolved in v2.0</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-detailed-findings">8. Detailed findings</h2>
+<p>The body that follows is ordered by severity, then by ID.</p>
+<hr />
+<h3
+id="idos-001--release-reverts-at-end-of-schedule-with-tokens-still-staked">IDOS-001
+— <code>release()</code> reverts at end-of-schedule with tokens still
+staked</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Likelihood</td>
+<td>Medium (any beneficiary who stakes &gt; free balance)</td>
+</tr>
+<tr>
+<td>Impact</td>
+<td>Moderate (UX failure; funds recoverable)</td>
+</tr>
+<tr>
+<td>Location</td>
+<td><code>src/IDOSStakingVesting.sol</code>
+<code>releasable(address)</code> + inherited
+<code>release(address)</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Fixed in commit <code>a31ce4e</code></td>
+</tr>
+<tr>
+<td>Found by</td>
+<td>Test failure in
+<code>test_stuck_slashing_lost_but_rest_still_releasable</code> during
+methodology §3.3</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> When the staked principal exceeds the
+wallet's free balance, <code>vestedAmount(token, ts)</code> (which now
+counts <code>outstandingStake</code>) can exceed
+<code>IDOSbalanceOf(this) + released(token)</code>. OpenZeppelin's
+inherited <code>release(address)</code> then attempts:</p>
+<pre class="solidity"><code>amount = releasable(token);                       // = vestedAmount − released
+SafeERC20.safeTransfer(IERC20(token), owner(), amount);</code></pre>
+<p>which reverts via <code>IERC20.transfer</code> with
+<code>ERC20InsufficientBalance</code> because the wallet does not hold
+<code>amount</code> IDOS.</p>
+<p><strong>Exploit scenario.</strong></p>
+<ol type="1">
+<li>Beneficiary holds 1 000 IDOS in a fresh
+<code>IDOSStakingVesting</code>.</li>
+<li>They <code>stakeAt(node, 1 000 IDOS)</code> at <code>t = 0</code>.
+<code>outstandingStake = 1e21</code>.</li>
+<li>Schedule elapses fully. Beneficiary calls
+<code>release(IDOS)</code>.</li>
+<li><code>vestedAmount = 1e21</code>, <code>releasable = 1e21</code>,
+wallet balance = <code>0</code>.</li>
+<li><code>release()</code> reverts. The beneficiary cannot withdraw any
+IDOS until they first <code>unstakeFrom(node, …)</code>, wait the 14-day
+staking-contract <code>UNSTAKE_DELAY</code>, then
+<code>withdrawUnstaked()</code> and re-call <code>release()</code>.</li>
+</ol>
+<p><strong>Impact.</strong> No funds are lost; the failure is a
+confusing revert with no contract-defined error name. At scale this is
+the most likely source of beneficiary support load.</p>
+<p><strong>Recommendation.</strong> Override
+<code>releasable(address)</code> to cap the result at the wallet's free
+balance of the token. OZ's <code>release(address)</code> then behaves as
+a partial payment: it pays whatever is currently free and leaves the
+residual for the post-unstake flow. The released-amount accumulator
+(<code>_erc20Released</code>) is correctly bumped by the actual
+transfer, so the invariant <code>released ≤ vestedAmount</code>
+continues to hold.</p>
+<p><strong>Resolution.</strong> Commit <code>a31ce4e</code>:</p>
+<pre class="solidity"><code>function releasable(address token) public view override returns (uint256) {
+    uint256 amount   = vestedAmount(token, uint64(block.timestamp)) - released(token);
+    uint256 balance  = IERC20(token).balanceOf(address(this));
+    return amount &gt; balance ? balance : amount;
+}</code></pre>
+<p>Re-running
+<code>test_stuck_slashing_lost_but_rest_still_releasable</code> against
+the post-fix code returns <code>[PASS] (gas: 17 047 604)</code>.</p>
+<hr />
+<h3
+id="idos-002--claimvested-bypasses-the-onlybeneficiary-guard-of-withdrawunstaked">IDOS-002
+— <code>claimVested()</code> bypasses the <code>onlyBeneficiary</code>
+guard of <code>withdrawUnstaked()</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Likelihood</td>
+<td>High (any external EOA can call <code>claimVested</code>)</td>
+</tr>
+<tr>
+<td>Impact</td>
+<td>Minor (beneficiary-favourable side-effect only)</td>
+</tr>
+<tr>
+<td>Location</td>
+<td><code>src/IDOSStakingVesting.sol</code> <code>claimVested</code> vs
+<code>withdrawUnstaked</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>Found by</td>
+<td>Methodology §3.1 (manual review)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> <code>withdrawUnstaked()</code> is
+gated to the beneficiary (<code>onlyBeneficiary</code>), but
+<code>claimVested()</code> is <code>external</code> (no modifier) and
+internally calls <code>STAKING.withdrawUnstaked()</code> indirectly
+through <code>this._withdrawUnstakedExternal()</code>. Any external
+address can therefore trigger the withdraw side-effect.</p>
+<p><strong>Exploit scenario.</strong> None. Every code path is
+beneficiary-favourable:</p>
+<ol type="1">
+<li>Tokens that matured in the staking queue land back in the vesting
+wallet (which the beneficiary still controls).</li>
+<li>The vested portion is released to the beneficiary EOA, paid for by
+the caller's gas.</li>
+</ol>
+<p>There is no destination the caller can influence.</p>
+<p><strong>Impact.</strong> No loss; a third-party auditor will flag the
+asymmetric gating as inconsistent and request a comment or modifier
+change.</p>
+<p><strong>Recommendation.</strong> Either:</p>
+<ul>
+<li>(a) Remove the <code>onlyBeneficiary</code> modifier from
+<code>withdrawUnstaked()</code> and document both functions as
+permissionless. The reviewer's preference; matches reality.</li>
+<li>(b) Add a NatSpec block on <code>claimVested()</code> explicitly
+stating the permission asymmetry is intentional and listing the threat
+reasoning.</li>
+</ul>
+<p><strong>Resolution.</strong> Acknowledged; option (b) preferred. The
+audit report itself constitutes the documentation; a code comment will
+be added in the next minor commit.</p>
+<hr />
+<h3
+id="idos-003--inherited-renounceownership-can-burn-locked-idos">IDOS-003
+— Inherited <code>renounceOwnership()</code> can burn locked IDOS</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Likelihood</td>
+<td>Low (requires the beneficiary to call the function)</td>
+</tr>
+<tr>
+<td>Impact</td>
+<td>Catastrophic (entire remaining allocation burned)</td>
+</tr>
+<tr>
+<td>Location</td>
+<td>Inherited from <code>Ownable</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Fixed in commit <code>a31ce4e</code></td>
+</tr>
+<tr>
+<td>Found by</td>
+<td>Methodology §3.1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> OpenZeppelin's
+<code>Ownable.renounceOwnership()</code> is
+<code>public onlyOwner</code> and transfers ownership to
+<code>address(0)</code>. Because <code>release(token)</code> pays
+<code>owner()</code> and is permissionless, once ownership is renounced
+any third party can call <code>release()</code> and burn the released
+portion. Over the schedule's lifetime, every IDOS remaining in the
+wallet is permanently destroyed.</p>
+<p><strong>Exploit scenario.</strong></p>
+<ol type="1">
+<li>Beneficiary, intending to disclaim the vesting position, calls
+<code>renounceOwnership()</code>. (Or makes the call by accident — there
+is no confirmation.) <code>owner() == address(0)</code> thereafter.</li>
+<li>Any third party (or automated bot) calls <code>release(IDOS)</code>.
+The vested portion at that moment is <code>safeTransfer</code>'d to
+<code>address(0)</code>. OZ's ERC20 reverts on transfer to the zero
+address — except it does not in v5.5; <code>_transfer</code> reverts
+only if <code>to == address(0)</code> and is called from
+<code>_update</code>, but <code>safeTransfer</code> is allowed to send
+to zero with the standard ERC20 emitting Transfer(from, 0, amount). In
+OZ v5.5 <code>_update</code> does
+<code>if (to == address(0)) { _totalSupply -= value; }</code> — i.e.
+transferring to zero is a <strong>burn</strong>.</li>
+<li>Repeated calls over the schedule progressively burn every IDOS in
+the wallet plus any staked principal that returns via
+<code>withdrawUnstaked()</code>.</li>
+</ol>
+<p><strong>Impact.</strong> Total irrecoverable loss of the
+beneficiary's allocation.</p>
+<p><strong>Recommendation.</strong> Override
+<code>renounceOwnership()</code> to revert. If a deliberate "forfeit"
+workflow is ever needed, implement an explicit
+<code>forfeitTo(address sink)</code> that pays to a non-zero
+address.</p>
+<p><strong>Resolution.</strong> Commit <code>a31ce4e</code>:</p>
+<pre class="solidity"><code>error RenounceOwnershipDisabled();
+
+function renounceOwnership() public view override onlyOwner {
+    revert RenounceOwnershipDisabled();
+}</code></pre>
+<p>(Note: a <code>pure</code> modifier would also be valid since the
+body never reads state; the reviewer chose <code>view</code> for parity
+with the OZ base <code>renounceOwnership</code> for ease of binary-diff
+comparison.)</p>
+<hr />
+<h3
+id="idos-004--vestedamount-is-no-longer-monotonic-under-slashing">IDOS-004
+— <code>vestedAmount()</code> is no longer monotonic under slashing</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Likelihood</td>
+<td>Low (requires the staking owner to slash a node where the wallet has
+stake)</td>
+</tr>
+<tr>
+<td>Impact</td>
+<td>Moderate (off-chain consumers may be confused; on-chain math stays
+solvent thanks to clamp)</td>
+</tr>
+<tr>
+<td>Location</td>
+<td><code>src/IDOSStakingVesting.sol</code>
+<code>vestedAmount</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Acknowledged</td>
+</tr>
+<tr>
+<td>Found by</td>
+<td>Methodology §3.1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> OZ's documentation states that
+<code>vestedAmount(token, ts)</code> is monotonically non-decreasing in
+<code>ts</code>. With the slashing adjustment</p>
+<pre class="solidity"><code>uint256 alive = outstandingStake &gt; slashed ? outstandingStake - slashed : 0;
+total += alive;</code></pre>
+<p>a slash event can decrease the value of <code>total</code> between
+two reads at fixed <code>ts</code>, or even cause
+<code>total * (ts2 − ts1) / duration</code> to decrease when the slash
+loss exceeds the schedule's gain over <code>[ts1, ts2]</code>. The
+<code>Math.max(_vestingSchedule(total, ts), released(token))</code>
+clamp prevents this from underflowing <code>releasable</code>, but the
+documented monotonicity guarantee no longer holds.</p>
+<p><strong>Exploit scenario.</strong> None on-chain. Off-chain risk:</p>
+<ol type="1">
+<li>An indexer subscribes to <code>EtherReleased</code> /
+<code>ERC20Released</code> and computes "remaining to vest" as
+<code>vestedAmount(now) − released</code>.</li>
+<li>A slash event occurs.</li>
+<li>On the next refresh the indexer observes <code>vestedAmount</code>
+decreasing, produces a negative "remaining" or asserts a contradiction,
+and crashes / reports incorrectly.</li>
+</ol>
+<p><strong>Impact.</strong> No on-chain effect. Off-chain consumers that
+assume monotonicity will be incorrect or unstable.</p>
+<p><strong>Recommendation.</strong> Document the deviation prominently
+in the NatSpec and in the integration guide. Optionally expose a
+<code>slashedSnapshot()</code> view returning the current
+<code>STAKING.getUserStake(this).slashed</code> so indexers can
+correlate the drop with a specific event.</p>
+<p><strong>Resolution.</strong> Acknowledged in NatSpec on
+<code>vestedAmount</code>; integration guide for downstream consumers is
+part of the migration plan.</p>
+<hr />
+<h3
+id="idos-005--inconsistent-received-amount-computation-between-withdrawunstaked-and-claimvested">IDOS-005
+— Inconsistent received-amount computation between
+<code>withdrawUnstaked</code> and <code>claimVested</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Location</td>
+<td><code>src/IDOSStakingVesting.sol</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Fixed in commit <code>a31ce4e</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> Pre-<code>a31ce4e</code>, two code
+paths computed the same quantity differently:
+<code>withdrawUnstaked</code> used the balance-delta pattern
+(<code>balance_after − balance_before</code>), while
+<code>claimVested</code> used the return value of
+<code>STAKING.withdrawUnstaked()</code>. Both produce the same number
+for a well-behaved IDOS implementation, but the balance- delta approach
+is mildly more defensive against any future IDOS upgrade adding
+fee-on-transfer or rebasing semantics.</p>
+<p><strong>Resolution.</strong> Both paths now flow through a single
+internal helper <code>_withdrawUnstakedInternal()</code> that uses the
+balance-delta pattern. The permissionless <code>claimVested</code>
+reaches it via a guarded external wrapper
+(<code>this._withdrawUnstakedExternal()</code>) so that
+<code>try/catch</code> continues to work and the gated
+<code>withdrawUnstaked</code> path uses it directly.</p>
+<hr />
+<h3
+id="idos-006--no-contract-emitted-events-for-staking-helpers">IDOS-006 —
+No contract-emitted events for staking helpers</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Location</td>
+<td><code>src/IDOSStakingVesting.sol</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Fixed in commit <code>a31ce4e</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> Pre-<code>a31ce4e</code>,
+<code>stakeAt</code>, <code>unstakeFrom</code>,
+<code>withdrawUnstaked</code>, <code>withdrawReward</code>, and
+<code>claimVested</code> emitted nothing local. Wallet-level indexers
+had to join <code>IDOSNodeStaking</code> events to wallet addresses to
+reconstruct per-wallet activity.</p>
+<p><strong>Resolution.</strong> Five events added:</p>
+<ul>
+<li><code>Staked(address indexed node, uint256 amount)</code></li>
+<li><code>Unstaked(address indexed node, uint256 amount)</code></li>
+<li><code>UnstakeWithdrawn(uint256 amount)</code></li>
+<li><code>RewardWithdrawn(uint256 amount)</code></li>
+<li><code>Claimed(uint256 releasedAmount, uint256 unstakedReturned)</code></li>
+</ul>
+<p>Slither (Appendix B) flags "reentrancy-events" because the events are
+emitted <em>after</em> the external call. The reviewer accepts this —
+emitting the event before the call would lie if the call reverts; the
+ordering is intentional.</p>
+<hr />
+<h3 id="idos-007--floating-compiler-pragma">IDOS-007 — Floating compiler
+pragma</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Location</td>
+<td>All <code>.sol</code> files</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Fixed in commits <code>a31ce4e</code> (<code>src/</code>) and
+<code>274b660</code> (<code>script/</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> Pre-<code>a31ce4e</code>, all files
+used <code>pragma solidity ^0.8.27;</code>. Future minor releases of
+Solidity have historically introduced codegen or ABI changes that
+surprised projects relying on floating ranges. The live deployment used
+<code>0.8.28</code> but the source did not enforce it.</p>
+<p><strong>Resolution.</strong> All in-scope files now pin
+<code>pragma solidity 0.8.28;</code>.</p>
+<hr />
+<h3 id="idos-008--single-step-ownable-ownership-transfer">IDOS-008 —
+Single-step <code>Ownable</code> ownership transfer</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Location</td>
+<td>Inherited from <code>Ownable</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Recommended</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> OZ's
+<code>Ownable.transferOwnership(address newOwner)</code> sets
+<code>owner()</code> to <code>newOwner</code> in a single transaction
+with no confirmation from <code>newOwner</code>. A mistyped or invalid
+address becomes the new beneficiary immediately and irreversibly; all
+subsequent releases flow to the unrecoverable address.</p>
+<p><strong>Recommendation.</strong> Replace <code>Ownable</code> with
+<code>Ownable2Step</code>, which introduces a <code>pendingOwner</code>
+slot and requires the new owner to call <code>acceptOwnership()</code>.
+Trade-off: extra transaction; slightly larger inheritance surface.</p>
+<p><strong>Resolution.</strong> Acknowledged; deferred to the
+third-party audit-fix batch.</p>
+<hr />
+<h3
+id="idos-009--constructor-accepts-a-cliff--0-deployment-with-start-in-the-far-past">IDOS-009
+— Constructor accepts a <code>cliff = 0</code> deployment with
+<code>start</code> in the far past</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Location</td>
+<td><code>src/IDOSStakingVesting.sol</code> constructor</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Acknowledged</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> <code>VestingWalletCliff</code>
+validates <code>cliffSeconds ≤ duration</code>, but neither it nor our
+child contract validates <code>duration &gt; 0</code> or that
+<code>start</code> is within a sensible band. A deployer can create a
+wallet with <code>start = 0</code> and <code>duration = 1</code>, which
+fully vests in the first block. The factory
+<code>TDEDisbursement2</code> is the production gatekeeper; a direct
+deployer of <code>IDOSStakingVesting</code> gets no such check.</p>
+<p><strong>Recommendation.</strong> Add
+<code>require(durationSeconds &gt; 0)</code> and optionally
+<code>require(startTimestamp + durationSeconds &gt; block.timestamp)</code>
+to forbid already-fully-vested wallets at deploy.</p>
+<p><strong>Resolution.</strong> Acknowledged; mitigated by the
+factory.</p>
+<hr />
+<h3 id="idos-010--rewards-vest-with-principal">IDOS-010 — Rewards vest
+with principal</h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Informational</th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+<p>By design, staking rewards land in the vesting wallet and are subject
+to the same schedule. The README documents an alternative
+"rewards-pass-through" variant. A beneficiary who expects rewards to be
+immediately spendable will be confused. Documented; no code change.</p>
+<hr />
+<h3 id="idos-011--no-emergency-pause--circuit-breaker">IDOS-011 — No
+emergency pause / circuit breaker</h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Informational</th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+<p><code>IDOSStakingVesting</code> has no pause function. Consistent
+with the irrevocable vesting-wallet model. If a critical bug is found
+post-deploy, only off-chain mitigations remain (e.g. instruct
+beneficiaries to <code>transferOwnership</code> to a recovery
+contract).</p>
+<hr />
+<h3 id="idos-012--reliance-on-stakinggetuserstakeslashed">IDOS-012 —
+Reliance on <code>STAKING.getUserStake().slashed</code></h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Informational</th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+<p>The wallet trusts <code>IDOSNodeStaking</code> to report the slashed
+amount honestly. A bug there propagates into <code>vestedAmount</code>.
+Out of scope by the engagement boundaries.</p>
+<hr />
+<h3 id="idos-013--immutable-staking-and-idos-addresses">IDOS-013 —
+Immutable <code>STAKING</code> and <code>IDOS</code> addresses</h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Informational</th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+<p>Both are set in the constructor and cannot be updated. If either
+contract is ever migrated, the wallet cannot follow. The staking
+contract is non-proxy today.</p>
+<hr />
+<h3 id="idos-014--forceapprove-instead-of-approve">IDOS-014 —
+<code>forceApprove</code> instead of <code>approve</code></h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Informational</th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+<p><code>forceApprove</code> performs two <code>SSTORE</code>s
+(reset-to-zero then set). IDOS is a standard ERC20 and would accept a
+direct <code>approve</code>. Trade-off: defense-in-depth for tokens that
+revert on non-zero-to-non-zero approvals, at the cost of ~5 000 gas per
+<code>stakeAt</code>. Reviewer recommends keeping
+<code>forceApprove</code> for portability.</p>
+<hr />
+<h3 id="idos-015--eth-receive-inherited-from-vestingwallet">IDOS-015 —
+ETH <code>receive()</code> inherited from
+<code>VestingWallet</code></h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Informational</th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+<p>The wallet accepts ETH and vests it on the same schedule. ETH sent by
+mistake is recoverable via <code>release()</code> (the no-arg variant).
+The wallet also accepts ETH via <code>SELFDESTRUCT</code> of another
+contract; same outcome.</p>
+<hr />
+<h3 id="idos-016--foreign-erc20s-vest-on-the-same-schedule">IDOS-016 —
+Foreign ERC20s vest on the same schedule</h3>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Informational</th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+<p>Any token sent to the wallet by mistake is treated as vesting
+principal on the IDOS schedule. Recoverable via
+<code>release(otherToken)</code>. Standard OZ behaviour.</p>
+<hr />
+<h3
+id="idos-017--state-write-after-external-call-in-_withdrawunstakedinternal">IDOS-017
+— State-write-after-external-call in
+<code>_withdrawUnstakedInternal</code></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Likelihood</td>
+<td>Low (requires the staking contract to be replaced with a
+non-reentrant-protected version)</td>
+</tr>
+<tr>
+<td>Impact</td>
+<td>Moderate (reentrant withdraw could double-decrement
+<code>outstandingStake</code>)</td>
+</tr>
+<tr>
+<td>Location</td>
+<td><code>src/IDOSStakingVesting.sol</code>
+<code>_withdrawUnstakedInternal</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Recommended (<code>ReentrancyGuard</code> defense-in-depth)</td>
+</tr>
+<tr>
+<td>Found by</td>
+<td>Methodology §3.4 (Slither <code>reentrancy-benign</code>
+detector)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> The function performs:</p>
+<pre><code>1. before    = IDOS.balanceOf(this)
+2. STAKING.withdrawUnstaked()                  ← external call
+3. received  = IDOS.balanceOf(this) − before
+4. outstandingStake -= received                ← state write after call</code></pre>
+<p>Slither flags this as <code>reentrancy-benign</code> because the
+state mutation happens after the external call. The pattern is currently
+safe because:</p>
+<ul>
+<li><code>IDOSNodeStaking.withdrawUnstaked</code> carries
+<code>nonReentrant</code>;</li>
+<li>IDOS has no transfer hooks; and</li>
+<li>The only callback opportunity (the safeTransfer to
+<code>msg.sender</code>, which is the wallet itself) does not invoke any
+code on the wallet.</li>
+</ul>
+<p><strong>Exploit scenario (hypothetical).</strong> If
+<code>IDOSNodeStaking</code> is ever replaced with a version that omits
+<code>nonReentrant</code>, or if IDOS is ever upgraded (it cannot be, on
+the current bytecode) to add transfer hooks, a malicious staking
+contract could re-enter <code>withdrawUnstaked</code> /
+<code>claimVested</code> before the
+<code>outstandingStake -= received</code> write completes,
+double-decrementing the counter and corrupting the vesting math.</p>
+<p><strong>Recommendation.</strong> Apply OZ's
+<code>ReentrancyGuard</code> to <code>stakeAt</code>,
+<code>unstakeFrom</code>, <code>withdrawUnstaked</code>,
+<code>withdrawReward</code>, and <code>claimVested</code> as
+defense-in-depth. Gas cost ≈ 2 300 per call. The change does not alter
+any user-visible behaviour today.</p>
+<p><strong>Resolution.</strong> Recommended for the third-party
+audit-fix batch.</p>
+<hr />
+<h2 id="9-operational-findings">9. Operational findings</h2>
+<p>These are off-chain or process-level findings. They are not contract
+bugs but materially affect deployment safety.</p>
+<hr />
+<h3
+id="ops-001--beneficiary-private-key-for-live-test-wallet-leaked">OPS-001
+— Beneficiary private key for live test wallet leaked</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Operational</td>
+</tr>
+<tr>
+<td>Affected</td>
+<td>EOA <code>0x1bCE6d61F2cFE40F0879b17a43780695CbCc19ff</code>, wallet
+<code>0xbe7a0Fd1…4CA6</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Open</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> A private key for the live test
+beneficiary EOA was embedded in <code>HANDOFF.md</code> at commit
+<code>57448d2</code> and visible on the public GitHub repository for
+several minutes before being redacted in <code>e76c7a9</code>. Per
+industry practice, the key must be treated as permanently compromised:
+leaked-key scrapers index GitHub commits within seconds and the bad
+commit remains in git history until a <code>git push --force</code>
+rewrites it.</p>
+<p><strong>Immediate consequences.</strong></p>
+<ul>
+<li>The EOA holds ≈107.46 IDOS and dust ETH at the time of writing.</li>
+<li>The vesting wallet currently holds 42.54 IDOS in residual
+balance.</li>
+<li>A further 50 IDOS sits in the staking unstake queue, ripe on
+2026-05-29.</li>
+<li>An attacker holding the leaked key can call
+<code>transferOwnership(theirAddress)</code> to redirect every future
+<code>release()</code> and <code>withdrawReward()</code> to
+themselves.</li>
+</ul>
+<p><strong>Recommendation.</strong></p>
+<ol type="1">
+<li>From the compromised EOA (whichever is fastest), call
+<code>transferOwnership(newSafeAddress)</code> on
+<code>0xbe7a0Fd1…4CA6</code> to a fresh EOA the team controls. After
+that, the leaked key can no longer redirect funds.</li>
+<li>Sweep the residual IDOS and ETH from the compromised EOA to the new
+address. The amounts are small (≈ $1.40 + dust) but it is hygiene.</li>
+<li>Report the exposure to <code>security@github.com</code> to expedite
+GitHub's secret-scanning revocation cache.</li>
+<li>Going forward, never embed credentials in repository files. Use
+environment variables exclusively, including in handoff documents.</li>
+</ol>
+<p><strong>Resolution.</strong> Open. Action sits with the wallet
+holder.</p>
+<hr />
+<h3
+id="ops-002--live-deployed-bytecode-pre-dates-remediation-commits">OPS-002
+— Live deployed bytecode pre-dates remediation commits</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Operational</td>
+</tr>
+<tr>
+<td>Affected</td>
+<td>Live test wallet <code>0xbe7a0Fd1…4CA6</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>Found by</td>
+<td>Methodology §3.6</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> The live test wallet was deployed
+before the <code>a31ce4e</code> remediation batch. Its on-chain bytecode
+does not include:</p>
+<ul>
+<li>IDOS-001 fix (<code>releasable</code> cap)</li>
+<li>IDOS-003 fix (<code>renounceOwnership</code> revert)</li>
+<li>IDOS-005 fix (shared <code>_withdrawUnstakedInternal</code>)</li>
+<li>IDOS-006 fix (events)</li>
+<li>IDOS-007 fix (pinned pragma — already-compiled bytecode unaffected,
+but verification metadata differs)</li>
+</ul>
+<p>For the specific Phase-2 closeout on 2026-05-29 this does not matter
+because the flow <code>withdrawUnstaked → release</code> happens with
+the entire allocation already returned to the wallet's free balance (so
+the M-1 revert condition is not triggered). For any other deployment,
+the live bytecode is <strong>not the production bytecode</strong>
+documented in this report.</p>
+<p><strong>Recommendation.</strong> Mark this wallet as "test only —
+pre-remediation" in the handoff documentation. All future production
+deployments must use the post-<code>274b660</code> artifacts.</p>
+<p><strong>Resolution.</strong> Open; documentation update pending.</p>
+<hr />
+<h3
+id="ops-003--no-migration-plan-for-the-affected-v1-cohort-20-070-wallets">OPS-003
+— No migration plan for the affected v1 cohort (20 070 wallets)</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Severity</td>
+<td>Operational</td>
+</tr>
+<tr>
+<td>Affected</td>
+<td>20 070 <code>IDOSVesting</code> v1 wallets shipped under modality 3
+(<code>VESTED_1_5</code>) instead of the intended
+<code>VESTED_1_6</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Open</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Description.</strong> The v1 wallets cannot be retrofitted
+with staking capability (no <code>approve</code>, no generic
+<code>call</code>, no delegate-style hook in the IDOS token). Three
+classes of recipient exist:</p>
+<table>
+<thead>
+<tr>
+<th>Cohort modality</th>
+<th>Today (2026-05-15)</th>
+<th>Mitigation paths</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VESTED_1_5</code> (~20 070 wallets)</td>
+<td>Past cliff, ~46 % vested</td>
+<td>Beneficiaries can release vested portion to EOA and stake
+themselves. ~5 weeks of unintended cliff lockup is unrecoverable.</td>
+</tr>
+<tr>
+<td><code>VESTED_12_24</code>, <code>VESTED_12_36</code> (~24
+wallets)</td>
+<td>Fully locked until 2027-02-05</td>
+<td>No on-chain rescue. Off-chain options: treasury issues additional
+IDOS via a new <code>IDOSStakingVesting</code>, or beneficiary transfers
+ownership of the v1 wallet to an escrow that re-deposits releases into
+the new staking-aware wallet.</td>
+</tr>
+<tr>
+<td>Future cohorts</td>
+<td>Not yet deployed</td>
+<td>Use <code>TDEDisbursement2</code> from now on.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Recommendation.</strong> Treat as a treasury / governance
+decision. The contract changes in this audit do not affect the v1
+cohort.</p>
+<p><strong>Resolution.</strong> Open; decision required at the treasury
+level.</p>
+<hr />
+<h2 id="10-code-quality-observations">10. Code-quality observations</h2>
+<p>These are stylistic or quality observations that did not warrant a
+finding.</p>
+<ul>
+<li><strong>Naming consistency.</strong> The public token reference is
+<code>IDOS</code> (all-caps immutable). The staking reference is
+<code>STAKING</code>. The local variables for amounts use camelCase.
+Conforms to standard OZ style.</li>
+<li><strong>Custom errors used instead of revert strings.</strong> Best
+practice; cheap on gas; clear semantics.</li>
+<li><strong>NatSpec presence.</strong> Major functions are documented.
+The audit recommends extending NatSpec to cover the
+<code>vestedAmount</code> monotonicity deviation noted in IDOS-004.</li>
+<li><strong>No assembly.</strong> The contract is pure Solidity; no
+<code>unchecked</code> blocks, no <code>assembly { ... }</code>. Reduces
+audit surface.</li>
+<li><strong>No upgradability hooks.</strong> Each wallet is a one-shot
+deployment.</li>
+<li><strong>CREATE2 salt uses a versioned namespace</strong>
+(<code>"IDOSStakingVesting.v2"</code>) to ensure no collisions with v1
+factory addresses; defense-in-depth even though cross-factory collisions
+are computationally infeasible.</li>
+</ul>
+<hr />
+<h2 id="11-test-coverage-assessment">11. Test-coverage assessment</h2>
+<h3 id="111-existing-tests">11.1 Existing tests</h3>
+<ul>
+<li><code>test/IDOSStakingVesting.t.sol</code> (basic happy path): 3
+cases.</li>
+<li><code>test/Adversarial.t.sol</code>: 15 cases organised under
+"gameability", "circumvention", and "stuck-token" axes; 12 of the 15
+names map directly to specific threat objectives in §5.2.</li>
+</ul>
+<p>All 15 adversarial cases <strong>PASS</strong> against the
+post-remediation code at commit <code>274b660</code> (full execution log
+in Appendix C).</p>
+<h3 id="112-identified-gaps">11.2 Identified gaps</h3>
+<p>The following test cases would be added by a thorough engagement:</p>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Suggested test name</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pre-cliff staking with <code>cliff &gt; 0</code></td>
+<td><code>test_precliff_staking_during_cliff_window</code></td>
+</tr>
+<tr>
+<td><code>renounceOwnership</code> reverts with the named error</td>
+<td><code>test_renounceOwnership_reverts</code></td>
+</tr>
+<tr>
+<td>Rewards arriving mid-flight and vesting correctly</td>
+<td><code>test_reward_arrival_vests_with_principal</code></td>
+</tr>
+<tr>
+<td>Boundary timestamps <code>ts == start</code>,
+<code>ts == cliff</code>, <code>ts == end</code></td>
+<td><code>test_boundary_timestamps_handled</code></td>
+</tr>
+<tr>
+<td>Multi-node fan-out with mixed slashing across 5+ nodes</td>
+<td><code>test_multinode_mixed_slashing_accounting</code></td>
+</tr>
+<tr>
+<td>Fee-on-transfer foreign token sent to wallet</td>
+<td><code>test_fee_on_transfer_foreign_token</code></td>
+</tr>
+<tr>
+<td>Beneficiary transfer chain (A → B → C)</td>
+<td><code>test_transfer_ownership_chain_releases_correctly</code></td>
+</tr>
+<tr>
+<td>Schedule with <code>duration = 1</code> second</td>
+<td><code>test_minimal_duration_schedule</code></td>
+</tr>
+<tr>
+<td><code>outstandingStake</code> overflow path</td>
+<td><code>test_outstandingStake_overflow_reverts</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="113-fuzz--invariant-testing">11.3 Fuzz / invariant testing</h3>
+<p>None. The contract has a clean set of state-variable invariants
+(§4.3) that lend themselves well to Foundry's invariant testing or
+Echidna. The reviewer recommends a 1-hour Echidna run as part of the
+third-party engagement.</p>
+<h3 id="114-formal-verification">11.4 Formal verification</h3>
+<p>Not applicable to the current code base at the cost-benefit ratio of
+this engagement. The vesting math is amenable to Halmos / Certora if
+warranted by deployment scale.</p>
+<hr />
+<h2 id="12-static-analysis-results">12. Static-analysis results</h2>
+<p>Slither was run with the following configuration:</p>
+<pre><code>slither src/IDOSStakingVesting.sol \
+        --solc-remaps &quot;@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/&quot; \
+        --filter-paths &quot;lib/&quot;</code></pre>
+<p>Findings produced:</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Count</th>
+<th>Triage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>unused-return</code></td>
+<td>2</td>
+<td>Both intentional:
+<code>(, uint256 slashed) = STAKING.getUserStake(...)</code>
+destructures one of two return values;
+<code>_withdrawUnstakedInternal</code> uses balance-delta accounting
+instead of the staking return value.</td>
+</tr>
+<tr>
+<td><code>reentrancy-benign</code></td>
+<td>1</td>
+<td>IDOS-017. Recommended defense-in-depth fix.</td>
+</tr>
+<tr>
+<td><code>reentrancy-events</code></td>
+<td>4</td>
+<td>Events emitted after external calls. Ordering is intentional;
+emitting before would lie if the call reverts.</td>
+</tr>
+<tr>
+<td><code>timestamp</code></td>
+<td>2</td>
+<td><code>ts &lt; cliff()</code> is the intended cliff check;
+<code>amount &gt; balance</code> in <code>releasable</code> is not
+actually a timestamp comparison (Slither false positive).</td>
+</tr>
+<tr>
+<td><code>naming-convention</code></td>
+<td>1</td>
+<td><code>IDOS</code> and <code>STAKING</code> use all-caps for
+immutables, which Slither flags but OZ accepts.</td>
+</tr>
+</tbody>
+</table>
+<p>The Math library inside OZ surfaces a couple of
+<code>divide-before-multiply</code> detector hits that are well-known
+false positives in <code>mulDiv</code>.</p>
+<p>Full Slither output reproduced in Appendix B.</p>
+<hr />
+<h2 id="13-disclaimer-and-limitations">13. Disclaimer and
+limitations</h2>
+<p>This audit was performed under the following constraints. A reader is
+asked to weigh the findings in light of them.</p>
+<h3 id="131-single-agent-self-audit">13.1 Single-agent self-audit</h3>
+<p>The reviewer is the same agent that authored the contracts under
+review. Internal blindspots, motivated reasoning, and missed angles are
+intrinsic to this setup. The report is structured to maximise the
+exploit surface a subsequent third-party engagement can target, not to
+replace it.</p>
+<h3 id="132-time-budget">13.2 Time budget</h3>
+<p>≈3 hours of active review + 25 minutes of fork-test execution. A
+professional engagement on a code base this size typically runs 1–3
+weeks of two or three auditors. Subtle finding density tends to scale
+with reviewer-hours, not with code size.</p>
+<h3 id="133-techniques-not-applied">13.3 Techniques not applied</h3>
+<p>Property-based fuzzing, symbolic execution, and formal verification
+were considered and explicitly deferred (§3.7). Any of them could
+produce additional findings.</p>
+<h3 id="134-trust-boundaries">13.4 Trust boundaries</h3>
+<p>The deployed <code>IDOSNodeStaking</code>, <code>IDOSToken</code>,
+and OpenZeppelin Contracts v5.5.0 are treated as canonical. Any defect
+in those components propagates into <code>IDOSStakingVesting</code> and
+is out of scope here.</p>
+<h3 id="135-future-solidity--evm-changes">13.5 Future Solidity / EVM
+changes</h3>
+<p>The pragma is pinned to 0.8.28 (§IDOS-007). Future hard-fork EVM
+changes (e.g. transient storage, new precompiles, or successor cancun
+features) are not modelled.</p>
+<h3 id="136-no-guarantee">13.6 No guarantee</h3>
+<p>This document constitutes the reviewer's best-effort analysis as of
+the date of issue. It is not a guarantee of correctness, security, or
+fitness for any purpose. The reader assumes full responsibility for any
+deployment decision.</p>
+<hr />
+<h2 id="appendix-a--tools-and-versions">Appendix A — tools and
+versions</h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Version</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Solidity compiler</td>
+<td><code>0.8.28</code></td>
+<td>Compilation</td>
+</tr>
+<tr>
+<td>Foundry <code>forge</code> / <code>cast</code> /
+<code>anvil</code></td>
+<td><code>1.7.1-Homebrew</code> (Commit <code>4072e487</code>, build
+<code>2026-05-08</code>)</td>
+<td>Compile, test, broadcast</td>
+</tr>
+<tr>
+<td>OpenZeppelin Contracts</td>
+<td><code>v5.5.0</code></td>
+<td>Vesting + Ownable + ERC20 utilities</td>
+</tr>
+<tr>
+<td>Slither</td>
+<td><code>slither-analyzer 0.10.x</code> (from PyPI)</td>
+<td>Static analysis</td>
+</tr>
+<tr>
+<td>Etherscan API v2</td>
+<td>(REST)</td>
+<td>Source-code retrieval for deployed contracts</td>
+</tr>
+<tr>
+<td>Arbitrum RPC</td>
+<td><code>https://arb1.arbitrum.io/rpc</code></td>
+<td>Fork-mode tests and live deploy</td>
+</tr>
+</tbody>
+</table>
+<p>Reproducibility:</p>
+<pre class="sh"><code>brew install foundry
+forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.5.0 --no-git --shallow
+pip3 install slither-analyzer
+forge build
+forge test --fork-url https://arb1.arbitrum.io/rpc -vv
+slither src/IDOSStakingVesting.sol \
+        --solc-remaps &quot;@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/&quot; \
+        --filter-paths &quot;lib/&quot;</code></pre>
+<hr />
+<h2 id="appendix-b--slither-output-raw">Appendix B — Slither output
+(raw)</h2>
+<pre><code>INFO:Detectors:
+Detector: unused-return
+IDOSStakingVesting.vestedAmount(address,uint64) ignores return value by
+    (None, slashed) = STAKING.getUserStake(address(this))
+IDOSStakingVesting._withdrawUnstakedInternal() ignores return value by
+    STAKING.withdrawUnstaked()
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unused-return
+
+Detector: reentrancy-benign
+Reentrancy in IDOSStakingVesting._withdrawUnstakedInternal():
+    External calls:
+    - STAKING.withdrawUnstaked()
+    State variables written after the call(s):
+    - outstandingStake -= received
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
+
+Detector: reentrancy-events
+Reentrancy in IDOSStakingVesting.stakeAt(address,uint256):
+    External calls:
+    - STAKING.stake(address(this),node,amount)
+    Event emitted after the call(s):
+    - Staked(node,amount)
+Reentrancy in IDOSStakingVesting.unstakeFrom(address,uint256):
+    External calls:
+    - STAKING.unstake(node,amount)
+    Event emitted after the call(s):
+    - Unstaked(node,amount)
+Reentrancy in IDOSStakingVesting.withdrawReward():
+    External calls:
+    - amount = STAKING.withdrawReward()
+    Event emitted after the call(s):
+    - RewardWithdrawn(amount)
+Reentrancy in IDOSStakingVesting.withdrawUnstaked():
+    External calls:
+    - received = _withdrawUnstakedInternal() → STAKING.withdrawUnstaked()
+    Event emitted after the call(s):
+    - UnstakeWithdrawn(received)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-4
+
+Detector: timestamp
+IDOSStakingVesting._vestingSchedule(uint256,uint64) uses timestamp for comparisons
+    Dangerous comparisons:
+    - ts &lt; cliff()
+IDOSStakingVesting.releasable(address) uses timestamp for comparisons
+    Dangerous comparisons:
+    - amount &gt; balance
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+
+Detector: naming-convention
+Variable IDOSStakingVesting.IDOS is not in mixedCase
+Variable IDOSStakingVesting.STAKING is not in mixedCase
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#conformance-to-solidity-naming-conventions</code></pre>
+<p>The OZ <code>Math</code> library produces ~10 additional
+<code>divide-before-multiply</code> and one <code>incorrect-exp</code>
+hit. All are well-known patterns inside <code>Math.mulDiv</code> /
+<code>Math.invMod</code> and have been accepted by upstream OpenZeppelin
+maintainers; no action is taken on them in this report.</p>
+<hr />
+<h2 id="appendix-c--fork-test-execution-log">Appendix C — fork-test
+execution log</h2>
+<pre><code>$ forge test --fork-url https://arb1.arbitrum.io/rpc \
+              --match-path test/Adversarial.t.sol -vv
+
+No files changed, compilation skipped
+
+Ran 15 tests for test/Adversarial.t.sol:IDOSStakingVestingAdversarial
+[PASS] test_circumvent_no_external_allowance()              (gas:  1 909 303)
+[PASS] test_circumvent_only_beneficiary_can_stake_etc()     (gas:     28 122)
+[PASS] test_circumvent_reentrant_owner_cannot_drain()       (gas:    323 300)
+[PASS] test_circumvent_t0_nothing_leaks()                   (gas:  1 914 254)
+[PASS] test_circumvent_third_party_release_pays_beneficiary (gas:     94 561)
+[PASS] test_circumvent_transfer_ownership_doesnt_unlock()   (gas:  1 983 496)
+[PASS] test_constructor_rejects_zero_addresses()            (gas:    127 791)
+[PASS] test_foreign_token_vests_normally()                  (gas:    572 835)
+[PASS] test_game_cannot_release_more_than_schedule()        (gas:  4 976 044)
+[PASS] test_game_overstake_reverts()                        (gas:  1 927 397)
+[PASS] test_game_round_trips_dont_drift()                   (gas:  9 459 679)
+[PASS] test_stuck_full_lifecycle_returns_everything()       (gas: 16 602 706)
+[PASS] test_stuck_pause_then_unpause_recovers()             (gas:  1 843 257)
+[PASS] test_stuck_premature_withdraw_does_not_lose_tokens() (gas:  1 839 545)
+[PASS] test_stuck_slashing_lost_but_rest_still_releasable() (gas: 17 047 604)
+Suite result: ok. 15 passed; 0 failed; 0 skipped; finished in 795.83s</code></pre>
+<h3 id="live-deployment-artefacts-phase-1-of-the-live-test">Live
+deployment artefacts (Phase 1 of the live test)</h3>
+<pre><code>Wallet         : 0xbe7a0Fd150216273Ff879F25902dC2761A0d4CA6
+Beneficiary    : 0x1bCE6d61F2cFE40F0879b17a43780695CbCc19ff
+Node           : 0x0C5393db793DbA88f16DC4D030D678FBD88F8B0D
+Start          : 1 778 857 909
+Duration       : 14 400 s   (4 h)
+Cliff          : 0
+Funded         : 100 IDOS
+Stake tx       : 0xf0364627274f56b6e4929cb2252ad6a6032fac5480d891d8d02d128d475131ef
+Release tx     : 0x78378500fed7858bff26ab9f3ba3024214728df5e722a018a6050e1ab79cb5d4
+Unstake tx     : 0x7e53423e3b432864678d14d40aa2075fd650c7c50553bf56a4b6d6da6e849b71
+Premature withdraw : reverted with NoWithdrawableStake (selector 0xf395c842)</code></pre>
+<p>— end of report —</p>
