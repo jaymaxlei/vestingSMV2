@@ -5,6 +5,7 @@ import {VestingWallet}        from "@openzeppelin/contracts/finance/VestingWalle
 import {VestingWalletCliff}   from "@openzeppelin/contracts/finance/VestingWalletCliff.sol";
 import {IERC20}               from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20}            from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math}                 from "@openzeppelin/contracts/utils/math/Math.sol";
 
 interface IIDOSNodeStaking {
     function stake(address user, address node, uint256 amount) external;
@@ -31,6 +32,8 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
     uint256 public outstandingStake;
 
     error OnlyBeneficiary();
+    error ZeroAddressToken();
+    error ZeroAddressStaking();
 
     modifier onlyBeneficiary() {
         if (msg.sender != owner()) revert OnlyBeneficiary();
@@ -49,6 +52,8 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
         VestingWallet(beneficiary, startTimestamp, durationSeconds)
         VestingWalletCliff(cliffSeconds)
     {
+        if (address(idos)    == address(0)) revert ZeroAddressToken();
+        if (address(staking) == address(0)) revert ZeroAddressStaking();
         IDOS    = idos;
         STAKING = staking;
     }
@@ -57,16 +62,25 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
 
     /// Adds the live staked balance (net of slashing) to the allocation
     /// total. Otherwise release() would underpay while anything is staked.
+    ///
+    /// Slashing safety: if slashing reduces the allocation so far that the
+    /// linear schedule would return less than what has already been released
+    /// (e.g. user released early, then a node they staked into got slashed),
+    /// the result is clamped to `released(token)`. That preserves OZ's
+    /// invariant "vestedAmount is monotonically non-decreasing over time *and*
+    /// is always >= released(token)" — without it, `releasable()` would
+    /// underflow and brick all future calls.
     function vestedAmount(address token, uint64 ts)
         public view virtual override returns (uint256)
     {
-        uint256 total = IERC20(token).balanceOf(address(this)) + released(token);
+        uint256 alreadyReleased = released(token);
+        uint256 total = IERC20(token).balanceOf(address(this)) + alreadyReleased;
         if (token == address(IDOS)) {
             (, uint256 slashed) = STAKING.getUserStake(address(this));
             uint256 alive = outstandingStake > slashed ? outstandingStake - slashed : 0;
             total += alive;
         }
-        return _vestingSchedule(total, ts);
+        return Math.max(_vestingSchedule(total, ts), alreadyReleased);
     }
 
     /// Cliff override — preserved exactly as in the original IDOSVesting.
@@ -101,5 +115,23 @@ contract IDOSStakingVesting is VestingWallet, VestingWalletCliff {
     /// IDOS.safeTransfer(owner(), received).
     function withdrawReward() external onlyBeneficiary returns (uint256 amount) {
         return STAKING.withdrawReward();
+    }
+
+    /// Convenience: tries to pull any unstake-ripe IDOS back into the wallet,
+    /// then sends the currently-vested portion to the beneficiary. Permissionless
+    /// on purpose — every code path is favourable to the beneficiary, and the
+    /// withdraw step silently no-ops if nothing is ready (avoiding a revert on
+    /// the staking contract's NoWithdrawableStake error).
+    function claimVested() external returns (uint256 releasedAmount, uint256 unstakedReturned) {
+        try STAKING.withdrawUnstaked() returns (uint256 r) {
+            unstakedReturned = r;
+            outstandingStake -= r;
+        } catch {
+            // Nothing in the unstake queue is ripe yet — that's fine, fall
+            // through to release() so any time-vested portion still pays out.
+        }
+        uint256 before = IDOS.balanceOf(owner());
+        release(address(IDOS));
+        releasedAmount = IDOS.balanceOf(owner()) - before;
     }
 }
