@@ -17,7 +17,7 @@ contract IDOSStakingVestingForkTest is Test {
     IIDOSNodeStaking constant STAKING =
         IIDOSNodeStaking(0x6132F2EE66deC6bdf416BDA9588D663EaCeec337);
 
-    address constant STAKING_OWNER = 0xd5259B6E9D8a413889953a1F3195d8f8350642dE;
+    address constant STAKING_OWNER = 0xd5259b6E9D8a413889953a1F3195D8F8350642dE;
 
     address beneficiary = makeAddr("beneficiary");
     address node        = makeAddr("node");
