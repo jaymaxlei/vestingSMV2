@@ -228,14 +228,24 @@ does `withdrawUnstaked()` then `release(IDOS)`, and asserts the closing
 state: wallet IDOS = 0, beneficiary IDOS = 200 IDOS, `released() = 100e18`,
 `outstandingStake = 0`.
 
-**Test private key** (DO NOT reuse for production — it's a throwaway funded
-with ~0.01 ETH + 100 IDOS specifically for this experiment):
+**Test private key — REDACTED / COMPROMISED.** The original key was briefly
+included in this file when it was first published, was visible in the public
+GitHub repo for a few minutes, and must be assumed leaked permanently
+(leaked-key scrapers on GitHub act in seconds). The corresponding EOA
+`0x1bCE6d61F2cFE40F0879b17a43780695CbCc19ff` **must not be used for anything
+further** and any remaining IDOS / ETH on it should be treated as at risk.
 
-```
-fca9b35be437e61c61b23d0e48024f3fe853a0c0d19cba17ee3e1159aea53305
+For Phase 2, transfer ownership of the test wallet to a fresh EOA the team
+controls **before** the 14-day unstake delay elapses (2026-05-29):
+
+```sh
+cast send 0xbe7a0Fd150216273Ff879F25902dC2761A0d4CA6 \
+  'transferOwnership(address)' <NEW_OWNER_ADDRESS> \
+  --rpc-url https://arb1.arbitrum.io/rpc --private-key <compromised key>
 ```
 
-Address: `0x1bCE6d61F2cFE40F0879b17a43780695CbCc19ff`.
+then run `script/LiveFinish.sh` (or the two `cast send` lines inside it)
+from the new EOA after the delay opens.
 
 ---
 
@@ -292,8 +302,9 @@ BENEFICIARY=0x… PRIVATE_KEY=0x… \
   forge script script/Deploy.s.sol --rpc-url https://arb1.arbitrum.io/rpc --broadcast
 
 # Finish the live test (2026-05-29 onwards)
-PRIVATE_KEY=fca9b35be437e61c61b23d0e48024f3fe853a0c0d19cba17ee3e1159aea53305 \
-  ./script/LiveFinish.sh
+# First transfer wallet ownership from the compromised EOA to a new one,
+# then run the closer from that new EOA:
+PRIVATE_KEY=<new beneficiary key> ./script/LiveFinish.sh
 ```
 
 ---
